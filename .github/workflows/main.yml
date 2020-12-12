@@ -80,7 +80,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        msg: cross-validation-result/results.md
+        msg: results.md
 
   build-and-push-image-to-docker-hub:
     name: Build and Push Image
