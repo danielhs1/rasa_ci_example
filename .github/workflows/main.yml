@@ -44,7 +44,7 @@ jobs:
       if: github.event_name == 'pull_request'
       run: |
         rasa test nlu --cross-validation
-        python format_results.py
+        python format_test_results.py
         
     - name: Upload Cross Validation Results
       if: github.event_name == 'pull_request'
