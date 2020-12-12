@@ -15,6 +15,7 @@ nlu:
     - goodmorning
     - goodevening
     - good afternoon
+    - morning
 
 - intent: goodbye
   examples: |
