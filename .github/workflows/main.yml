@@ -83,7 +83,7 @@ jobs:
   build-and-push-image-to-docker-hub:
     name: Build and Push Image
     runs-on: ubuntu-latest
-    needs: [test-and-upload-model]
+    needs: [share-cross-validation-result]
     env:
       IS_PUSH_EVENT: ${{ github.event_name == 'push' }}
 
