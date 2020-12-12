@@ -1,6 +1,7 @@
 [packages]
 rasa = ">=2.1.*"
 sanic = "<19.12.3"
+pytablewriter = "==0.58.0"
 
 [requires]
 python_version = "3.8"
