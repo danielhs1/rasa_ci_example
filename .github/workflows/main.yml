@@ -1,0 +1,166 @@
+name: Model CI
+on:
+  push:
+    branches:
+    - 'main'
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+env:
+  DOMAIN: 'your-rasa-x-domain-here'
+
+jobs:
+  test-and-upload-model:
+    name: Build, test, and upload model
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Set up Python 3.8
+      uses: actions/setup-python@v1
+      with:
+        python-version: 3.8
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install --no-cache -U pip pipenv
+        pipenv install --system --verbose
+        
+    - name: Check stories are consistent
+      run: |
+        rasa data validate stories --max-history 5 --fail-on-warning
+        
+    - name: Train model
+      run: |
+        rasa train
+        
+    - name: Run Through Test Stories
+      run: |
+        rasa test --fail-on-prediction-errors
+        
+    - name: Cross-validate NLU model
+      if: github.event_name == 'pull_request'
+      run: |
+        rasa test nlu --cross-validation
+        python format_results.py
+        
+    - name: Upload Cross Validation Results
+      if: github.event_name == 'pull_request'
+      uses: actions/upload-artifact@v2
+      with:
+        name: cross-validation-result
+        path: results.md
+
+    - name: Upload model
+      if: github.event_name == 'push' && (startsWith(github.event.ref, 'refs/tags') || github.ref == 'refs/heads/main')
+      uses: actions/upload-artifact@v2
+      with:
+        name: model
+        path: models
+
+  share-cross-validation-result:
+    # Separate job to avoid expired GitHub token
+    name: Share cross validation results
+    runs-on: ubuntu-latest
+    needs: [test-and-upload-model]
+
+    if: github.event_name == 'pull_request'
+
+    steps:
+    - name: Download Cross Validation Results
+      uses: actions/download-artifact@v2
+      continue-on-error: true
+      with:
+        name: cross-validation-result
+
+    - name: post cross-val results to PR
+      uses: amn41/comment-on-pr@comment-file-contents
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        msg: cross-validation-result/results.md
+
+  build-and-push-image-to-docker-hub:
+    name: Build and Push Image
+    runs-on: ubuntu-latest
+    env:
+      IS_PUSH_EVENT: ${{ github.event_name == 'push' }}
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Set image tag
+      run: |
+        if [[ $IS_PUSH_EVENT == "false" ]]
+        then
+          IMAGE_TAG=${{ github.head_ref }}
+        else
+          IMAGE_TAG=$(basename ${{ github.ref }})
+        fi
+        echo "::set-env name=IMAGE_TAG::${IMAGE_TAG}-${{ github.sha }}"
+    - name: Build and push the Docker image
+      env:
+        DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+        DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+      run: |
+        # Read and export variables from .env file
+        docker login -u ${DOCKER_USERNAME} -p ${DOCKER_PASSWORD}
+        docker build . \
+          --tag ${DOCKER_USERNAME}/rasa-ci-example:$IMAGE_TAG
+        gcloud docker -- push ${DOCKER_USERNAME}/rasa-ci-example:$IMAGE_TAG
+        
+  deploy-to-cluster:
+    name: Re-deploy the cluster with the latest image
+    runs-on: ubuntu-latest
+
+    needs: 
+    - build-and-push-image-to-docker-hub
+
+    if: github.event_name == 'push' && (startsWith(github.event.ref, 'refs/tags') || github.ref == 'refs/heads/main')
+
+    steps:
+      # Here you need add the steps to deploy the new image in your prefered k8 cluster.
+      - name: Hypothetical deploy script
+
+    
+  upload-model:
+    name: Upload the trained model to Rasa X
+    needs: 
+    - deploy-to-cluster
+    - test-and-upload-model
+    env:
+      MODEL_DIRECTORY: "models"
+
+    if: github.event_name == 'push' && (startsWith(github.event.ref, 'refs/tags') || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Download Model
+      uses: actions/download-artifact@v2
+      with:
+        name: model
+        path: ${{ env.MODEL_DIRECTORY }}
+
+    - name: Get path to model
+      run: |
+        ls -R
+        echo "::set-env name=MODELNAME::${{ env.MODEL_DIRECTORY }}/$(ls ${{ env.MODEL_DIRECTORY }})"
+    - name: Upload Model to Rasa
+      env:
+        RASA_X_PASSWORD: ${{ secrets.RASA_X_ADMIN_PASSWORD }}
+        RASA_X_USERNAME: admin
+        RASA_X_DEPLOYMENT_LABEL: "app.kubernetes.io/component=rasa-x"
+      run: |
+        # Get token
+        RASA_X_TOKEN=$(curl -s --header "Content-Type: application/json" \
+          --request POST \
+          --data "{\"username\":\"${RASA_X_USERNAME}\",\"password\":\"${RASA_X_PASSWORD}\"}" \
+          https://${{ env.DOMAIN }}/api/auth | jq -r .access_token)
+        # Upload model
+        curl -k --fail -H "Authorization: Bearer ${RASA_X_TOKEN}" -F "model=@${MODELNAME}" https://${{ env.DOMAIN }}/api/projects/default/models
+        # ensure model is ready and tag as production
+        sleep 5
+        export MODEL=$(basename ${MODELNAME} .tar.gz)
+        curl --fail -XPUT -H "Authorization: Bearer ${RASA_X_TOKEN}" https://${{ env.DOMAIN }}/api/projects/default/models/${MODEL}/tags/production
