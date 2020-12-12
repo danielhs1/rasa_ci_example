@@ -59,12 +59,9 @@ jobs:
         path: models
 
   share-cross-validation-result:
-    # Separate job to avoid expired GitHub token
     name: Share cross validation results
     runs-on: ubuntu-latest
     needs: [test-and-upload-model]
-
-    if: github.event_name == 'pull_request'
 
     steps:
     - name: Download Cross Validation Results
@@ -83,7 +80,7 @@ jobs:
   build-and-push-image-to-docker-hub:
     name: Build and Push Image
     runs-on: ubuntu-latest
-    needs: [share-cross-validation-result]
+    needs: [test-and-upload-model]
     env:
       IS_PUSH_EVENT: ${{ github.event_name == 'push' }}
 
